@@ -1,0 +1,110 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llamavector"
+version = "0.1.0"
+description = "Vector embedding generation, storage, and similarity search for LlamaAI Ecosystem"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}, # Replace with actual details
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database",
+]
+dependencies = [
+    # Core ML/Embedding Libraries
+    "numpy>=1.21.0",
+    "scipy>=1.7.0", # Often used alongside numpy for sparse matrices or math ops
+    "sentence-transformers>=2.2.0", # Popular choice for embeddings
+    # "torch>=1.13.0", # PyTorch, often needed by sentence-transformers, add if needed explicitly
+    # "tensorflow>=2.10.0", # TensorFlow, add if used
+    "pydantic>=1.10.0", # For data models
+    "loguru>=0.7.0",
+
+    # Vector Database Clients (Add/remove based on actual usage)
+    # Local/In-memory options
+    "faiss-cpu>=1.7.3", # Or faiss-gpu if CUDA is available/required
+    "annoy>=1.17.0",
+    "chromadb>=0.4.0",
+    # Cloud/Managed options
+    "pinecone-client>=2.2.0",
+    "qdrant-client>=1.1.0",
+    "weaviate-client>=3.15.0",
+
+    # Optional: Utilities
+    "tqdm>=4.60.0", # For progress bars during indexing
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.3.1",
+    "pytest-cov>=4.1.0",
+    "black>=23.3.0",
+    "isort>=5.12.0",
+    "mypy>=1.2.0",
+    "ruff>=0.0.260",
+    "pre-commit>=3.3.1",
+    # Add mocks if testing external vector DBs
+    "pytest-mock>=3.10.0",
+]
+docs = [
+    "mkdocs>=1.4.2",
+    "mkdocs-material>=9.1.6",
+    "mkdocstrings[python]>=0.20.0",
+]
+api = [
+    "fastapi>=0.95.0",
+    "uvicorn[standard]>=0.21.0",
+]
+all = [
+    "llama-vector[dev,docs,api]"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/llama-vector"
+"Bug Tracker" = "https://github.com/yourusername/llama-vector/issues"
+"Documentation" = "https://yourusername.github.io/llama-vector/"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llama_vector"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+ignore_missing_imports = true # Tighten later
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "C", "B"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py" 
