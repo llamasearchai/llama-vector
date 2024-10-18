@@ -4,12 +4,12 @@ on:
   push:
     branches: [ main, develop ]
     paths:
-      - 'llamavector-pkg/**'
+      - '**' # Trigger on any change within the package directory
       - '.github/workflows/llamavector_ci.yml'
   pull_request:
     branches: [ main, develop ]
     paths:
-      - 'llamavector-pkg/**'
+      - '**' # Trigger on any change within the package directory
       - '.github/workflows/llamavector_ci.yml'
   workflow_dispatch: # Allow manual triggering
 
@@ -79,8 +79,7 @@ jobs:
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
       with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        slug: ${{ github.repository }}
+        token: ${{ secrets.CODECOV_TOKEN }} # Use GitHub App integration if possible, token as fallback
+        slug: ${{ github.repository }} # Or specify manually if needed
         fail_ci_if_error: false
-        working-directory: ./llamavector-pkg
         verbose: true 
