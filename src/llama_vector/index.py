@@ -1,360 +1,178 @@
 """
-Vector index implementation with hybrid HNSW+IVF capabilities.
-
-This module provides the core VectorIndex class, which supports various index types,
-hardware acceleration, quantization, and versioned snapshots.
+Vector index implementation
 """
-
-import threading
-import time
-import uuid
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
-
-import faiss
 import numpy as np
-from loguru import logger
-from tqdm import tqdm
-
-from llama_vector.acceleration import (
-    enable_cuda,
-    normalize_vectors,
-)
-from llama_vector.config import LlamaVectorConfig
-from llama_vector.config import config as global_config
-from llama_vector.utils import Timer
-
-# Try to import MLX for acceleration on Apple Silicon
-try:
-    if global_config.use_mlx:
-        import mlx.core as mx
-
-        MLX_AVAILABLE = True
-    else:
-        MLX_AVAILABLE = False
-except ImportError:
-    MLX_AVAILABLE = False
+from typing import Dict, List, Tuple, Any, Optional
+import heapq
 
 
-class VectorIndex:
+class Index:
     """
-    Enterprise-grade vector index with hybrid HNSW+IVF capabilities.
+    A simple in-memory vector index for similarity search.
 
-    This class provides a high-performance vector indexing solution with support for:
-    - Multiple index types (flat, HNSW, IVF, hybrid HNSW+IVF)
-    - Hardware acceleration (MLX, CUDA, CPU)
-    - Dynamic quantization
-    - ACID-compliant versioned snapshots
+    Currently implements brute-force search by calculating cosine similarity 
+    against all stored vectors for each query. This is suitable for small datasets
+    but does not scale well.
+
+    Future improvements could include integrating optimized indexing libraries
+    like Faiss or HNSWlib based on the `index_type`.
 
     Attributes:
-        dimension (int): Dimensionality of vectors in the index
-        index_type (str): Type of index ("flat", "hnsw", "ivf", or "hybrid")
-        index (faiss.Index): The underlying FAISS index
-        metadata (dict): Metadata about the index and its contents
-        config (LlamaVectorConfig): Configuration for the index
+        dimension (int): The dimensionality of the vectors.
+        index_type (str): The type of index specified (e.g., "hnsw"). 
+                          Currently informational only.
+        vectors (Dict[str, np.ndarray]): A dictionary storing vectors keyed by ID.
     """
-
-    def __init__(
-        self,
-        dimension: int,
-        index_type: Literal["flat", "hnsw", "ivf", "hybrid"] = "hybrid",
-        use_gpu: bool = False,
-        config: Optional[LlamaVectorConfig] = None,
-        hnsw_params: Optional[Dict[str, Any]] = None,
-        ivf_params: Optional[Dict[str, Any]] = None,
-        quantization: Optional[Dict[str, Any]] = None,
-    ):
+    
+    def __init__(self, dimension: int, index_type: str = "flat"):
         """
-        Initialize a new VectorIndex.
+        Initializes the Index.
 
         Args:
-            dimension: Dimensionality of vectors to be indexed
-            index_type: Type of index to create
-            use_gpu: Whether to use GPU acceleration if available
-            config: Configuration for the index (defaults to global config)
-            hnsw_params: Parameters for HNSW index
-            ivf_params: Parameters for IVF index
-            quantization: Quantization parameters
+            dimension: The expected dimension of the vectors to be stored.
+            index_type: The type of index strategy (e.g., "flat", "hnsw"). 
+                        Currently informational, search defaults to flat/brute-force.
         """
         self.dimension = dimension
         self.index_type = index_type
-        self.use_gpu = use_gpu
-
-        # Use provided config or fall back to global config
-        self.config = config or global_config
-
-        # Set up parameters
-        self.hnsw_params = hnsw_params or self.config.hnsw_params.model_dump()
-        self.ivf_params = ivf_params or self.config.ivf_params.model_dump()
-        self.quantization_params = quantization or self.config.quantization.model_dump()
-
-        # Initialize metadata
-        self.metadata = {
-            "id": str(uuid.uuid4()),
-            "created_at": time.time(),
-            "dimension": dimension,
-            "index_type": index_type,
-            "hnsw_params": self.hnsw_params,
-            "ivf_params": self.ivf_params,
-            "quantization": self.quantization_params,
-            "count": 0,
-            "versions": [],
-            "items": {},  # Dict mapping IDs to metadata
-        }
-
-        # Set up mutex for thread safety
-        self._mutex = threading.RLock()
-
-        # Initialize the index
-        self._create_index()
-
-        if use_gpu and global_config.use_cuda:
-            self._move_to_gpu()
-
-    @classmethod
-    def create(
-        cls,
-        dimension: int,
-        index_type: Literal["flat", "hnsw", "ivf", "hybrid"] = "hybrid",
-        use_gpu: bool = False,
-        config: Optional[LlamaVectorConfig] = None,
-        hnsw_params: Optional[Dict[str, Any]] = None,
-        ivf_params: Optional[Dict[str, Any]] = None,
-        quantization: Optional[Dict[str, Any]] = None,
-    ) -> "VectorIndex":
+        self.vectors = {}  # id -> vector mapping
+        
+        # Placeholder for future: Initialize specific index based on index_type
+        # if self.index_type == "hnsw":
+        #     self._init_hnsw()
+        # elif self.index_type == "faiss":
+        #     self._init_faiss()
+        # else: # Default to flat/brute-force
+        #     pass
+    
+    def add(self, id: str, vector: np.ndarray) -> None:
         """
-        Create a new VectorIndex with the specified parameters.
-
-        This is the recommended factory method for creating a VectorIndex instance.
+        Adds or updates a vector in the index.
 
         Args:
-            dimension: Dimensionality of vectors to be indexed
-            index_type: Type of index to create
-            use_gpu: Whether to use GPU acceleration if available
-            config: Configuration for the index (defaults to global config)
-            hnsw_params: Parameters for HNSW index
-            ivf_params: Parameters for IVF index
-            quantization: Quantization parameters
+            id: The unique identifier for the vector.
+            vector: The vector as a numpy array.
+
+        Raises:
+            ValueError: If the vector's dimension does not match the index dimension.
+        """
+        if vector.shape == (self.dimension,):
+            self.vectors[id] = vector
+            # If using a real index library, add vector to it here
+            # e.g., self.hnsw_index.add_items(vector.reshape(1, -1), [int_id_representation])
+        elif vector.shape == (1, self.dimension):
+             # Accept (1, D) shape as well
+             self.vectors[id] = vector.reshape(self.dimension,)
+        else:
+             raise ValueError(
+                 f"Vector dimension mismatch. Expected ({self.dimension},) or (1, {self.dimension}), "
+                 f"got {vector.shape}"
+             )
+            
+    def delete(self, id: str) -> bool:
+        """
+        Deletes a vector from the index by its ID.
+
+        Args:
+            id: The ID of the vector to delete.
 
         Returns:
-            VectorIndex: A new vector index instance
+            True if the vector was found and deleted, False otherwise.
         """
-        return cls(
-            dimension=dimension,
-            index_type=index_type,
-            use_gpu=use_gpu,
-            config=config,
-            hnsw_params=hnsw_params,
-            ivf_params=ivf_params,
-            quantization=quantization,
-        )
-
-    def _create_index(self) -> None:
+        if id in self.vectors:
+            del self.vectors[id]
+            # If using a real index library, remove/mark vector as deleted here
+            # e.g., self.hnsw_index.mark_deleted(int_id_representation)
+            return True
+        return False
+    
+    def search(self, query_vector: np.ndarray, k: int = 10) -> List[Tuple[str, float]]:
         """
-        Create the underlying FAISS index based on the configured index type.
+        Finds the k nearest neighbors to the query vector using cosine similarity.
 
-        This method initializes the appropriate index structure based on the
-        index_type parameter and sets up quantization if enabled.
+        NOTE: This performs a brute-force search by comparing the query vector
+              to every vector currently in the index. It is not efficient for
+              large numbers of vectors.
+
+        Args:
+            query_vector: The query vector as a numpy array.
+            k: The number of nearest neighbors to return.
+
+        Returns:
+            A list of tuples, where each tuple contains the ID and the 
+            cosine similarity score of a neighbor, sorted by score descending.
+            Returns an empty list if the index is empty.
+        
+        Raises:
+            ValueError: If the query vector's dimension does not match the index dimension.
         """
-        with self._mutex:
-            # Start with a base vector description
-            index_factory_str = "IDMap2,Normalize"
-            quantize = self.quantization_params.get("enabled", False)
-
-            if self.index_type == "flat":
-                index_factory_str += ",Flat"
-
-            elif self.index_type == "hnsw":
-                m = self.hnsw_params.get("M", 16)
-                ef_construction = self.hnsw_params.get("efConstruction", 200)
-                index_factory_str += f",HNSW{m}"
-
-            elif self.index_type == "ivf":
-                nlist = self.ivf_params.get("nlist", 100)
-                if quantize:
-                    pq_m = self.quantization_params.get("pq_m", 8)
-                    pq_nbits = self.quantization_params.get("pq_nbits", 8)
-                    index_factory_str += f",IVF{nlist},PQ{pq_m}x{pq_nbits}"
-                else:
-                    index_factory_str += f",IVF{nlist},Flat"
-
-            elif self.index_type == "hybrid":
-                # Hybrid HNSW+IVF index
-                m = self.hnsw_params.get("M", 16)
-                nlist = self.ivf_params.get("nlist", 100)
-                if quantize:
-                    pq_m = self.quantization_params.get("pq_m", 8)
-                    pq_nbits = self.quantization_params.get("pq_nbits", 8)
-                    index_factory_str += f",HNSW{m}_IVF{nlist},PQ{pq_m}x{pq_nbits}"
-                else:
-                    index_factory_str += f",HNSW{m}_IVF{nlist},Flat"
-
+        if len(self.vectors) == 0:
+            return []
+            
+        # Validate query vector dimension
+        if query_vector.shape != (self.dimension,):
+            if query_vector.shape == (1, self.dimension):
+                query_vector = query_vector.reshape(self.dimension,) # Reshape if needed
             else:
-                raise ValueError(f"Unsupported index type: {self.index_type}")
+                 raise ValueError(
+                     f"Query vector dimension mismatch. Expected ({self.dimension},), "
+                     f"got {query_vector.shape}"
+                 )
+            
+        # --- Brute-Force Cosine Similarity Search --- 
+        results_heap: List[Tuple[float, str]] = [] # Use min-heap (score, id)
+        query_norm = np.linalg.norm(query_vector)
 
-            logger.info(f"Creating index with factory string: {index_factory_str}")
-            self.index = faiss.index_factory(
-                self.dimension, index_factory_str, faiss.METRIC_INNER_PRODUCT
-            )
+        if query_norm == 0:
+            return [] # Cannot compute similarity with zero vector
 
-            # Set HNSW parameters if applicable
-            if self.index_type in ["hnsw", "hybrid"]:
-                hnsw_index = (
-                    faiss.extract_index_ivf(self.index)
-                    if self.index_type == "hybrid"
-                    else self.index
-                )
-                hnsw_index.hnsw.efConstruction = self.hnsw_params.get("efConstruction", 200)
-                hnsw_index.hnsw.efSearch = self.hnsw_params.get("efSearch", 128)
-
-            # Set IVF parameters if applicable
-            if self.index_type in ["ivf", "hybrid"]:
-                ivf_index = faiss.extract_index_ivf(self.index)
-                ivf_index.nprobe = self.ivf_params.get("nprobe", 10)
-
-    def _move_to_gpu(self) -> None:
+        for vec_id, vector in self.vectors.items():
+            vec_norm = np.linalg.norm(vector)
+            if vec_norm == 0:
+                 similarity = 0.0
+            else:
+                # Calculate cosine similarity: dot(q, v) / (norm(q) * norm(v))
+                similarity = float(np.dot(query_vector, vector) / (query_norm * vec_norm))
+                similarity = np.clip(similarity, -1.0, 1.0) # Clip for safety
+            
+            # Use a min-heap to keep track of the top k largest scores
+            if len(results_heap) < k:
+                heapq.heappush(results_heap, (similarity, vec_id))
+            elif similarity > results_heap[0][0]: # If current sim > smallest in heap
+                 heapq.heapreplace(results_heap, (similarity, vec_id))
+                 
+        # Convert heap to sorted list (descending score)
+        # Heap elements are (score, id), we want (id, score)
+        sorted_results = sorted([(id, score) for score, id in results_heap], key=lambda x: x[1], reverse=True)
+        return sorted_results
+    
+    def get_nearest_neighbors(self, id: str, k: int = 10) -> List[Tuple[str, float]]:
         """
-        Move the index to GPU if CUDA is available.
+        Finds the k nearest neighbors for a vector already present in the index.
 
-        This method attempts to move the index to the GPU for faster search.
-        If CUDA is not available, it logs a warning and keeps the index on CPU.
-        """
-        try:
-            if not enable_cuda():
-                logger.warning("CUDA acceleration requested but not available")
-                return
-
-            res = faiss.StandardGpuResources()
-            self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
-            logger.info("Successfully moved index to GPU")
-        except Exception as e:
-            logger.warning(f"Failed to move index to GPU: {e}")
-
-    def add(
-        self,
-        vectors: np.ndarray,
-        ids: Optional[List[int]] = None,
-        metadata: Optional[List[Dict[str, Any]]] = None,
-    ) -> List[int]:
-        """
-        Add vectors to the index.
+        Excludes the vector itself from the results.
+        Uses the same brute-force search mechanism as `search()`.
 
         Args:
-            vectors: Numpy array of vectors to add (shape: [n, dimension])
-            ids: Optional list of IDs for the vectors (auto-generated if None)
-            metadata: Optional list of metadata dictionaries for each vector
+            id: The ID of the vector within the index to find neighbors for.
+            k: The number of nearest neighbors to return.
 
         Returns:
-            List[int]: List of IDs for the added vectors
+            A list of tuples (neighbor_id, score), sorted by score descending.
+        
+        Raises:
+            ValueError: If the provided ID is not found in the index.
         """
-        with self._mutex:
-            with Timer() as timer:
-                n = vectors.shape[0]
-
-                # Normalize vectors to unit length for cosine similarity
-                vectors = normalize_vectors(vectors)
-
-                # Generate IDs if not provided
-                if ids is None:
-                    next_id = self.metadata["count"]
-                    ids = list(range(next_id, next_id + n))
-
-                # Convert IDs to int64
-                ids_array = np.array(ids, dtype=np.int64)
-
-                # Add vectors to the index
-                self.index.add_with_ids(vectors, ids_array)
-
-                # Update metadata
-                for i, id_val in enumerate(ids):
-                    item_metadata = metadata[i] if metadata else {}
-                    self.metadata["items"][str(id_val)] = item_metadata
-
-                self.metadata["count"] += n
-                self.metadata["updated_at"] = time.time()
-
-            logger.debug(f"Added {n} vectors in {timer.elapsed:.4f}s")
-            return ids
-
-    def add_texts(
-        self,
-        texts: List[str],
-        model: Any,  # EmbeddingModel, avoiding circular import
-        ids: Optional[List[int]] = None,
-        metadata: Optional[List[Dict[str, Any]]] = None,
-        batch_size: int = 32,
-    ) -> List[int]:
-        """
-        Add texts to the index by first embedding them.
-
-        Args:
-            texts: List of text strings to embed and add
-            model: Embedding model to use
-            ids: Optional list of IDs for the vectors (auto-generated if None)
-            metadata: Optional list of metadata dictionaries for each vector
-            batch_size: Batch size for embedding
-
-        Returns:
-            List[int]: List of IDs for the added vectors
-        """
-        # Embed the texts in batches
-        all_embeddings = []
-
-        for i in tqdm(range(0, len(texts), batch_size), desc="Embedding texts"):
-            batch_texts = texts[i : i + batch_size]
-            batch_embeddings = model.embed(batch_texts)
-            all_embeddings.append(batch_embeddings)
-
-        # Concatenate all embeddings
-        embeddings = np.vstack(all_embeddings)
-
-        # Add metadata for texts if not provided
-        if metadata is None:
-            metadata = [{"text": text} for text in texts]
-        else:
-            # Add text to existing metadata
-            for i, text in enumerate(texts):
-                if metadata[i] is None:
-                    metadata[i] = {"text": text}
-                else:
-                    metadata[i]["text"] = text
-
-        # Add to index
-        return self.add(embeddings, ids, metadata)
-
-    def search(
-        self,
-        query: Union[np.ndarray, str],
-        model: Optional[Any] = None,  # EmbeddingModel, avoiding circular import
-        top_k: int = 10,
-        return_embeddings: bool = False,
-    ) -> List[Tuple[float, Dict[str, Any]]]:
-        """
-        Search the index for the nearest neighbors of the query vector.
-
-        Args:
-            query: Query vector or text string
-            model: Embedding model (required if query is a string)
-            top_k: Number of results to return
-            return_embeddings: Whether to include embeddings in the results
-
-        Returns:
-            List[Tuple[float, Dict]]: List of tuples with (score, item_metadata)
-        """
-        if isinstance(query, str):
-            if model is None:
-                raise ValueError("Embedding model must be provided for text queries")
-            query_vector = model.embed([query])[0]
-        else:
-            query_vector = query
-
-        # Ensure query vector is normalized
-        query_vector = normalize_vectors(query_vector.reshape(1, -1))[0]
-
-        with self._mutex:
-            # Set search parameters
-            if self.index_type in ["ivf", "hybrid"]:
-                ivf_index = faiss.extract_index_ivf(self.index)
-                ivf_index.nprobe = self.ivf_params.get("nprobe", 10)
-
-            if self.index_type in ["hnsw", "hybrid"]:
-                hns
+        if id not in self.vectors:
+            raise ValueError(f"Vector with ID '{id}' not found in index")
+            
+        query_vector = self.vectors[id]
+        
+        # Perform search, asking for k+1 results initially
+        results = self.search(query_vector, k + 1)
+        
+        # Filter out the query vector itself from the results
+        filtered_results = [(res_id, score) for res_id, score in results if res_id != id]
+        
+        # Return the top k from the filtered list
+        return filtered_results[:k]
